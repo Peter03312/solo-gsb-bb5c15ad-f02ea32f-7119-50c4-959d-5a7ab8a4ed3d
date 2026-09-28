@@ -28,6 +28,12 @@ import {
   MAX_ACCESS_INTERVALS,
   MAX_ACCESS_WEIGHT,
 } from './cache-retention.js';
+import {
+  planSharedFetch,
+  MAX_CLIENTS,
+  MAX_RANGES_PER_CLIENT,
+  MAX_CLIENT_ID_LENGTH,
+} from './shared-fetch.js';
 import { ENTITY_TAG_RE, parseHttpDate } from './conditional.js';
 
 const MEDIA_TYPE_RE =
@@ -184,6 +190,44 @@ const cacheRetentionBodySchema = {
       items: accessIntervalSchema,
     },
     budgetBytes: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+  },
+};
+
+const clientDemandSchema = {
+  type: 'object',
+  required: ['clientId', 'ranges'],
+  additionalProperties: false,
+  properties: {
+    clientId: { type: 'string', minLength: 1, maxLength: MAX_CLIENT_ID_LENGTH },
+    ranges: {
+      type: 'array',
+      maxItems: MAX_RANGES_PER_CLIENT,
+      items: {
+        type: 'object',
+        required: ['start', 'end'],
+        additionalProperties: false,
+        properties: {
+          start: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          end: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+        },
+      },
+    },
+  },
+};
+
+const sharedFetchBodySchema = {
+  type: 'object',
+  required: ['size', 'clients', 'maxFetchBytes', 'maxGapBytes'],
+  additionalProperties: false,
+  properties: {
+    size: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+    clients: {
+      type: 'array',
+      maxItems: MAX_CLIENTS,
+      items: clientDemandSchema,
+    },
+    maxFetchBytes: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+    maxGapBytes: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
   },
 };
 
@@ -358,6 +402,27 @@ export function buildApp(config = {}) {
         cached: request.body.cached,
         accesses: request.body.accesses,
         budgetBytes: request.body.budgetBytes,
+      });
+
+      return reply.status(result.statusCode).send(result);
+    },
+  );
+
+  // Shared origin-fetch planning: POST /shared-fetch-plan with per-client
+  // demanded intervals, the per-fetch byte ceiling and the max bridgeable gap;
+  // no Range header involved.
+  app.post(
+    '/shared-fetch-plan',
+    {
+      schema: { body: sharedFetchBodySchema },
+      validatorCompiler: strictBodyValidatorCompiler,
+    },
+    async (request, reply) => {
+      const result = planSharedFetch({
+        size: request.body.size,
+        clients: request.body.clients,
+        maxFetchBytes: request.body.maxFetchBytes,
+        maxGapBytes: request.body.maxGapBytes,
       });
 
       return reply.status(result.statusCode).send(result);
